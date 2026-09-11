@@ -1,0 +1,22 @@
+# Postgres for local development. Data lives in a named volume, so `docker compose
+# down` keeps it and `down -v` gives a clean slate.
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: estate-db
+    environment:
+      POSTGRES_DB: estate
+      POSTGRES_USER: estate
+      POSTGRES_PASSWORD: estate
+    ports:
+      - '5433:5432' # 5433 on the host, to avoid colliding with a local Postgres
+    volumes:
+      - estate-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U estate -d estate']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  estate-db:
