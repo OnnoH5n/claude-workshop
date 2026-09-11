@@ -70,6 +70,9 @@ export type RepoAnalysis = {
   springBootSupport: SupportState;
   /** Minor releases behind the current latest. */
   springBootBehind: number;
+  /** End-of-month policy boundaries, not precise cutoffs. */
+  springBootOssSupportEnd: string;
+  springBootCommercialSupportEnd: string;
   java: string;
   javaLts: boolean;
   buildTool: 'maven' | 'gradle';
@@ -119,7 +122,10 @@ export type Totals = {
   gatePassRate: number;
   medianCoverage: number;
   slaBreaches: number;
+  /** Strictly end-of-life: no commercial support route either. */
   eolRepos: number;
+  /** Off free/OSS support — includes eolRepos plus the extended-support lines. */
+  offOssSupport: number;
   criticalFindings: number;
   techDebtDays: number;
   staleScans: number;
@@ -128,6 +134,20 @@ export type Totals = {
 
 /** The list payload drops per-repo history to keep the initial response lean. */
 export type RepoSummary = Omit<Repo, 'history'>;
+
+/**
+ * Shape of data/seed.json — raw vendor metrics only, which is what a real
+ * SonarQube or Checkmarx API returns. Risk is scored at ingest by the Python
+ * backend (backend/risk.py) and totals/trend are derived in SQL, so neither is
+ * carried in the committed seed.
+ */
+export type SeedRepo = Omit<Repo, 'risk'>;
+
+export type Seed = {
+  generatedAt: string;
+  latestSpringBoot: string;
+  repos: SeedRepo[];
+};
 
 export type Portfolio = {
   generatedAt: string;

@@ -96,7 +96,9 @@ export function barChart(options: BarChartOptions): { chart: SVGSVGElement; tabl
       group.append(svg('text', {
         x: x + barW / 2, y: H - PAD.bottom + 29, 'text-anchor': 'middle',
         fill: `var(--status-${bar.sublabel.role})`, 'font-size': 10,
-        text: `${bar.sublabel.icon} ${bar.sublabel.text}`,
+        text: bar.sublabel.text
+          ? `${bar.sublabel.icon} ${bar.sublabel.text}`
+          : bar.sublabel.icon,
       }));
     }
     root.append(group);

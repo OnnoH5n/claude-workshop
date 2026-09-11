@@ -1,4 +1,4 @@
-.PHONY: dev db-up db-down db-nuke ingest psql test test-ci check reset mock clean
+.PHONY: dev api web db-up db-down db-nuke ingest psql venv test test-ci check reset mock clean
 
 # Start Postgres and wait until it accepts connections.
 db-up:
@@ -13,16 +13,27 @@ db-down:
 db-nuke:
 	docker compose down -v
 
-# Apply the schema and load data/seed.json into Postgres.
+venv:
+	python3 -m venv backend/.venv
+	backend/.venv/bin/python -m pip install -q -r backend/requirements.txt
+
+# Apply the schema and load data/seed.json (scoring risk on the way in).
 ingest: db-up
-	node server/db/ingest.ts
+	backend/.venv/bin/python backend/ingest.py
 
 psql:
 	docker exec -it estate-db psql -U estate -d estate
 
-# Start the app + API on one port. Serve over HTTP — never open index.html as file://.
+# Both tiers. The Python API owns Postgres; Vite serves the frontend and proxies
+# /api to it, so the browser sees one origin. Ctrl-C stops both.
 dev: db-up
 	@mkdir -p .artifacts
+	@$(MAKE) -j2 api web
+
+api: db-up
+	backend/.venv/bin/uvicorn main:app --app-dir backend --port 8000 --reload
+
+web:
 	npm run dev
 
 # Headed by default so the room can watch the tests drive the real UI.
@@ -38,9 +49,9 @@ check: db-up
 
 # Restore the demo to the committed known-good state (re-applies schema + re-ingests).
 reset:
-	@curl -s -o /dev/null -X POST localhost:5173/api/reset 2>/dev/null \
+	@curl -s -o /dev/null -X POST localhost:8000/api/reset 2>/dev/null \
 		&& echo "portfolio re-ingested from data/seed.json" \
-		|| node server/db/ingest.ts
+		|| backend/.venv/bin/python backend/ingest.py
 
 # Re-roll the mocked QA data (deterministic — same output every run), then load it.
 mock:
@@ -48,4 +59,4 @@ mock:
 	$(MAKE) ingest
 
 clean:
-	rm -rf .artifacts .playwright-cli
+	rm -rf .artifacts .playwright-cli backend/__pycache__

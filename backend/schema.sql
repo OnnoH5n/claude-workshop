@@ -8,16 +8,26 @@
 --     the fields we query into typed, constrained columns. A vendor adding a
 --     field costs no migration; charting it later is just a promotion.
 
-drop table if exists risk_snapshot, component_usage, finding, scan, repository cascade;
-drop type if exists qa_tool, severity, sonar_gate, support_state, tier cascade;
+-- Idempotent: safe to run on every start and every reset. Nothing is dropped, so
+-- enum OIDs and cached query plans stay valid for pooled connections. Clearing data
+-- is a separate TRUNCATE (see ingest.py) — a reset is not a schema migration.
+do $$ begin
+  create type qa_tool as enum ('sonarqube', 'checkmarx', 'sonatype', 'repo-analysis');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type severity as enum ('critical', 'serious', 'moderate', 'low');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type sonar_gate as enum ('passed', 'warn', 'failed');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type support_state as enum ('supported', 'oss-ended', 'eol');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type tier as enum ('tier-1', 'tier-2', 'tier-3');
+exception when duplicate_object then null; end $$;
 
-create type qa_tool        as enum ('sonarqube', 'checkmarx', 'sonatype', 'repo-analysis');
-create type severity       as enum ('critical', 'serious', 'moderate', 'low');
-create type sonar_gate     as enum ('passed', 'warn', 'failed');
-create type support_state  as enum ('supported', 'oss-ended', 'eol');
-create type tier           as enum ('tier-1', 'tier-2', 'tier-3');
-
-create table repository (
+create table if not exists repository (
   id          bigserial primary key,
   name        text        not null unique,
   team        text        not null,
@@ -28,10 +38,10 @@ create table repository (
   -- matter, this becomes a temporal dimension rather than current-state columns.
   created_at  timestamptz not null default now()
 );
-create index on repository (team);
-create index on repository (tier);
+create index if not exists repository_team_idx on repository (team);
+create index if not exists repository_tier_idx on repository (tier);
 
-create table scan (
+create table if not exists scan (
   id             bigserial   primary key,
   repository_id  bigint      not null references repository (id) on delete cascade,
   tool           qa_tool     not null,
@@ -56,13 +66,13 @@ create table scan (
 );
 -- Supports the DISTINCT ON (repository_id, tool) ... ORDER BY captured_at DESC
 -- that every dashboard query starts from.
-create index on scan (repository_id, tool, captured_at desc);
-create index on scan (captured_at desc);
-create index on scan using gin (payload);
+create index if not exists scan_repo_tool_captured_idx on scan (repository_id, tool, captured_at desc);
+create index if not exists scan_captured_at_idx on scan (captured_at desc);
+create index if not exists scan_payload_idx on scan using gin (payload);
 
 -- Per-finding rows, not per-severity counts. This is what makes SLA ageing, MTTR
 -- and new-vs-recurring real rather than approximated from an aggregate.
-create table finding (
+create table if not exists finding (
   id             bigserial   primary key,
   repository_id  bigint      not null references repository (id) on delete cascade,
   tool           qa_tool     not null,
@@ -73,12 +83,12 @@ create table finding (
   waived         boolean     not null default false,
   check (resolved_at is null or resolved_at >= first_seen_at)
 );
-create index on finding (repository_id, severity) where resolved_at is null;
-create index on finding (first_seen_at);
+create index if not exists finding_open_repo_severity_idx on finding (repository_id, severity) where resolved_at is null;
+create index if not exists finding_first_seen_at_idx on finding (first_seen_at);
 
 -- Dependency inventory. The table that answers "which repos ship this component
 -- below this version" during an incident — impossible from a bare count.
-create table component_usage (
+create table if not exists component_usage (
   id             bigserial primary key,
   repository_id  bigint    not null references repository (id) on delete cascade,
   coordinates    text      not null,           -- group:artifact
@@ -91,12 +101,12 @@ create table component_usage (
 -- Leading-wildcard search ("%log4j%") cannot use a btree index. Trigram GIN is what
 -- keeps the incident query fast once this table is hundreds of thousands of rows.
 create extension if not exists pg_trgm;
-create index on component_usage using gin (coordinates gin_trgm_ops);
-create index on component_usage (cve_id) where cve_id is not null;
+create index if not exists component_usage_coordinates_trgm_idx on component_usage using gin (coordinates gin_trgm_ops);
+create index if not exists component_usage_cve_id_idx on component_usage (cve_id) where cve_id is not null;
 
 -- The score AS REPORTED at ingest time. Recomputing on read would silently
 -- rewrite past quarters whenever the formula is recalibrated.
-create table risk_snapshot (
+create table if not exists risk_snapshot (
   repository_id  bigint      not null references repository (id) on delete cascade,
   computed_at    timestamptz not null,
   score          integer     not null check (score between 0 and 100),
@@ -109,7 +119,7 @@ create table risk_snapshot (
 
 -- Latest scan per repo per tool, pivoted to one row per repository. Every
 -- dashboard query reads this instead of repeating the window logic.
-create view repo_current as
+create or replace view repo_current as
 with latest as (
   select distinct on (repository_id, tool) *
     from scan

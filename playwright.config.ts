@@ -10,11 +10,20 @@ export default defineConfig({
     baseURL: 'http://localhost:5173',
     trace: 'retain-on-failure',
   },
-  webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
-    // Attach to the server already started for the workshop rather than starting a second.
-    reuseExistingServer: true,
-    timeout: 30_000,
-  },
+  // Two processes now: the Python API, and Vite serving the frontend and proxying
+  // /api to it. Both reuse an already-running instance rather than starting a second.
+  webServer: [
+    {
+      command: 'backend/.venv/bin/uvicorn main:app --app-dir backend --port 8000',
+      url: 'http://127.0.0.1:8000/api/portfolio',
+      reuseExistingServer: true,
+      timeout: 60_000,
+    },
+    {
+      command: 'npm run dev',
+      url: 'http://localhost:5173',
+      reuseExistingServer: true,
+      timeout: 30_000,
+    },
+  ],
 });

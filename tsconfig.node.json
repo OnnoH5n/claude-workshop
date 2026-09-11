@@ -12,5 +12,5 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true
   },
-  "include": ["server", "shared", "tests", "vite.config.ts", "playwright.config.ts"]
+  "include": ["scripts", "shared", "tests", "vite.config.ts", "playwright.config.ts"]
 }

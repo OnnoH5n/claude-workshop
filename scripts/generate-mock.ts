@@ -8,12 +8,11 @@
 // chosen to exercise the UI. They are not a source of truth for real EOL dates.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { computeRisk } from '../server/risk.ts';
 import type {
   Checkmarx,
   HistoryPoint,
-  Portfolio,
-  Repo,
+  Seed,
+  SeedRepo,
   RepoAnalysis,
   Severity,
   SonarGate,
@@ -22,7 +21,6 @@ import type {
   Sonatype,
   SupportState,
   Tier,
-  Totals,
 } from '../shared/types.ts';
 
 /** mulberry32 — small, fast, seeded. */
@@ -41,25 +39,51 @@ const int = (min: number, max: number): number => Math.floor(rand() * (max - min
 const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)];
 const chance = (p: number): boolean => rand() < p;
 
-const LATEST_SPRING_BOOT = '3.5';
+const LATEST_SPRING_BOOT = '4.1';
 
-// Illustrative support ladder. `behind` = minor releases behind LATEST_SPRING_BOOT.
-const SPRING_BOOT: Array<{ version: string; support: SupportState; behind: number }> = [
-  { version: '3.5', support: 'supported', behind: 0 },
-  { version: '3.4', support: 'supported', behind: 1 },
-  { version: '3.3', support: 'oss-ended', behind: 2 },
-  { version: '3.2', support: 'eol', behind: 3 },
-  { version: '3.1', support: 'eol', behind: 4 },
-  { version: '2.7', support: 'eol', behind: 8 },
+/**
+ * Real support ladder, verified 2026-09-11 against spring.io's generations API and
+ * endoflife.date (the two agreed exactly on every date below).
+ *
+ * Note the 3.x series ENDED at 3.5 — there is no 3.6; the line after 3.5 is 4.0.
+ * Only 4.1 and 4.0 remain in OSS support.
+ *
+ * 3.5 and 2.7 are the two "extended support" generations, which is why 2.7 is
+ * `oss-ended` rather than `eol` despite being eight minors behind: its commercial
+ * tail runs to 2029. Support state alone therefore understates lifecycle risk, so
+ * `behind` carries weight of its own in backend/risk.py.
+ *
+ * Dates are end-of-month policy boundaries, not precise cutoffs.
+ */
+const SPRING_BOOT: Array<{
+  version: string;
+  support: SupportState;
+  behind: number;
+  ossEnd: string;
+  commercialEnd: string;
+}> = [
+  { version: '4.1', support: 'supported', behind: 0, ossEnd: '2027-07-31', commercialEnd: '2028-07-31' },
+  { version: '4.0', support: 'supported', behind: 1, ossEnd: '2026-12-31', commercialEnd: '2027-12-31' },
+  { version: '3.5', support: 'oss-ended', behind: 2, ossEnd: '2026-06-30', commercialEnd: '2032-06-30' },
+  { version: '3.4', support: 'oss-ended', behind: 3, ossEnd: '2025-12-31', commercialEnd: '2026-12-31' },
+  { version: '3.3', support: 'eol', behind: 4, ossEnd: '2025-06-30', commercialEnd: '2026-06-30' },
+  { version: '3.2', support: 'eol', behind: 5, ossEnd: '2024-12-31', commercialEnd: '2025-12-31' },
+  { version: '3.1', support: 'eol', behind: 6, ossEnd: '2024-06-30', commercialEnd: '2025-06-30' },
+  { version: '2.7', support: 'oss-ended', behind: 8, ossEnd: '2023-06-30', commercialEnd: '2029-06-30' },
 ];
 // Weighted so the portfolio has a realistic laggard tail rather than a flat spread.
-const SPRING_BOOT_WEIGHTS = [10, 12, 8, 6, 4, 4];
+const SPRING_BOOT_WEIGHTS = [8, 10, 12, 8, 6, 4, 3, 4];
 
-const JAVA = [
+// Java 17 is the baseline for both 3.x and 4.x — the 4.0 jump did not raise it.
+// 4.x is compatible up to Java 26, but 26 is a feature release, not LTS.
+const JAVA_MODERN = [
+  { version: '25', lts: true },
   { version: '21', lts: true },
   { version: '17', lts: true },
+  { version: '26', lts: false },
+];
+const JAVA_LEGACY = [
   { version: '11', lts: true },
-  { version: '22', lts: false },
   { version: '8', lts: true },
 ];
 
@@ -186,7 +210,7 @@ function history(endCoverage: number, endCriticals: number): HistoryPoint[] {
   return points;
 }
 
-const repos: Repo[] = REPOS.map(([name, team, domain, tier]) => {
+const repos: SeedRepo[] = REPOS.map(([name, team, domain, tier]) => {
   const boot = weightedPick(SPRING_BOOT, SPRING_BOOT_WEIGHTS);
   // Health anchors every other metric, so a laggard repo is bad across the board —
   // which is how real portfolios actually look.
@@ -243,11 +267,14 @@ const repos: Repo[] = REPOS.map(([name, team, domain, tier]) => {
     lastScanDaysAgo: chance(0.1) ? int(31, 150) : int(0, 5),
   };
 
-  const java = boot.version.startsWith('2.') ? pick([JAVA[2], JAVA[4]]) : pick([JAVA[0], JAVA[1], JAVA[3]]);
+  // 2.7 predates the Java 17 baseline; everything 3.x and up sits on 17 or later.
+  const java = boot.version.startsWith('2.') ? pick(JAVA_LEGACY) : pick(JAVA_MODERN);
   const analysis: RepoAnalysis = {
     springBoot: boot.version,
     springBootSupport: boot.support,
     springBootBehind: boot.behind,
+    springBootOssSupportEnd: boot.ossEnd,
+    springBootCommercialSupportEnd: boot.commercialEnd,
     java: java.version,
     javaLts: java.lts,
     buildTool: chance(0.7) ? 'maven' : 'gradle',
@@ -259,49 +286,20 @@ const repos: Repo[] = REPOS.map(([name, team, domain, tier]) => {
     testRatio: Math.round(Math.max(0.05, health * 0.8 + (rand() - 0.5) * 0.2) * 100) / 100,
   };
 
-  const withoutRisk = { name, team, domain, tier, loc, sonar, checkmarx, sonatype, analysis,
-    history: history(coverage, scViolations.critical + cxFindings.critical) };
-  return { ...withoutRisk, risk: computeRisk(withoutRisk) };
+  return {
+    name, team, domain, tier, loc, sonar, checkmarx, sonatype, analysis,
+    history: history(coverage, scViolations.critical + cxFindings.critical),
+  };
 });
 
-function median(xs: number[]): number {
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
-}
-
-const totals: Totals = {
-  repos: repos.length,
-  gatePassRate: Math.round((repos.filter((r) => r.sonar.gate === 'passed').length / repos.length) * 100),
-  medianCoverage: median(repos.map((r) => r.sonar.coverage)),
-  slaBreaches: repos.reduce((n, r) => n + r.risk.slaBreaches, 0),
-  eolRepos: repos.filter((r) => r.analysis.springBootSupport === 'eol').length,
-  criticalFindings: repos.reduce(
-    (n, r) => n + r.sonatype.violations.critical + r.checkmarx.findings.critical, 0),
-  techDebtDays: repos.reduce((n, r) => n + r.sonar.techDebtDays, 0),
-  staleScans: repos.filter((r) =>
-    Math.max(r.sonar.lastScanDaysAgo, r.checkmarx.lastScanDaysAgo, r.sonatype.lastScanDaysAgo) > 30).length,
-  unowned: repos.filter((r) => !r.analysis.hasCodeowners).length,
-};
-
-// Portfolio trend = mean coverage and total criticals per week across all repos.
-const portfolioHistory: HistoryPoint[] = repos[0].history.map((_, i) => ({
-  week: repos[0].history[i].week,
-  coverage: Math.round(repos.reduce((n, r) => n + r.history[i].coverage, 0) / repos.length),
-  criticals: repos.reduce((n, r) => n + r.history[i].criticals, 0),
-}));
-
-const portfolio: Portfolio = {
+const seed: Seed = {
   generatedAt: new Date(Date.UTC(2026, 8, 11, 9, 0)).toISOString(),
   latestSpringBoot: LATEST_SPRING_BOOT,
-  totals,
-  history: portfolioHistory,
   repos,
 };
 
 writeFileSync(
   join(import.meta.dirname, '..', 'data', 'seed.json'),
-  `${JSON.stringify(portfolio, null, 2)}\n`,
+  `${JSON.stringify(seed, null, 2)}\n`,
 );
-console.log(`wrote ${repos.length} repos`);
-console.log(totals);
+console.log(`wrote ${repos.length} repos (raw vendor metrics; risk scored at ingest)`);

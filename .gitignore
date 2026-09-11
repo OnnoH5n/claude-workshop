@@ -4,3 +4,6 @@ dist/
 .playwright-cli/
 data/store.json
 .idea/
+backend/.venv/
+__pycache__/
+*.pyc

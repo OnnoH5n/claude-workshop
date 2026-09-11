@@ -79,6 +79,8 @@ export function detail(repo: Repo): HTMLElement {
       card('Repository analysis', analysis.lastCommitDaysAgo, [
         ['Spring Boot', chip(SUPPORT_STATUS[analysis.springBootSupport], analysis.springBoot)],
         ['Minors behind', String(analysis.springBootBehind)],
+        ['OSS support ends', analysis.springBootOssSupportEnd],
+        ['Commercial support ends', analysis.springBootCommercialSupportEnd],
         ['CODEOWNERS', analysis.hasCodeowners ? 'present' : 'missing'],
         ['README', analysis.hasReadme ? 'present' : 'missing'],
         ['Dockerfile', analysis.hasDockerfile ? 'present' : 'missing'],

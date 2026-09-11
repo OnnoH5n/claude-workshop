@@ -1,5 +1,11 @@
 // Mount + wiring. The only entry point.
-import { COVERAGE_POLICY, type PortfolioResponse, type Repo, type RepoSummary } from '../shared/types.ts';
+import {
+  COVERAGE_POLICY,
+  type PortfolioResponse,
+  type Repo,
+  type RepoSummary,
+  type SupportState,
+} from '../shared/types.ts';
 import { getPortfolio, getRepo } from './api.ts';
 import { barChart } from './ui/bar-chart.ts';
 import { el } from './ui/dom.ts';
@@ -40,19 +46,20 @@ const SORTERS: Record<SortKey, (r: RepoSummary) => number | string> = {
 /** Spring Boot spread. Ordered axis already encodes recency, so all bars share one
  *  hue — colouring by version too would double-encode what position shows. */
 function springBootChart(repos: RepoSummary[]) {
-  const order = ['3.5', '3.4', '3.3', '3.2', '3.1', '2.7'];
+  // Real ladder: the 3.x series ends at 3.5, then 4.0. There is no 3.6.
+  const order = ['4.1', '4.0', '3.5', '3.4', '3.3', '3.2', '3.1', '2.7'];
   const bars = order.map((version) => {
     const matching = repos.filter((r) => r.analysis.springBoot === version);
     const support = matching[0]?.analysis.springBootSupport
-      ?? (version >= '3.4' ? 'supported' : version === '3.3' ? 'oss-ended' : 'eol');
+      ?? (version.startsWith('4.') ? 'supported' : version === '3.5' ? 'oss-ended' : 'eol');
     const status = SUPPORT_STATUS[support];
     return {
       key: version,
       value: matching.length,
-      sublabel: {
-        icon: status.icon, role: status.role,
-        text: support === 'supported' ? 'supported' : support === 'oss-ended' ? 'OSS ended' : 'EOL',
-      },
+      // Icon only under the axis label — at eight bars the spelled-out states
+      // collided. The legend below the chart carries the wording, so status is
+      // still never colour-alone.
+      sublabel: { icon: status.icon, role: status.role, text: '' },
       detail: [status.label, `Tier 1: ${matching.filter((r) => r.tier === 'tier-1').length}`],
     };
   });
@@ -76,12 +83,30 @@ function coverageChart(repos: RepoSummary[]) {
   });
 }
 
-function chartCard(title: string, sub: string, built: { chart: SVGSVGElement; table: HTMLElement }): HTMLElement {
+function chartCard(
+  title: string,
+  sub: string,
+  built: { chart: SVGSVGElement; table: HTMLElement },
+  legend?: HTMLElement,
+): HTMLElement {
   return el('section', { class: 'card' }, [
     el('div', { class: 'card__head' }, [el('h3', { class: 'card__title', text: title })]),
     el('p', { class: 'card__sub', text: sub }),
     state.tables ? built.table : built.chart,
+    ...(legend && !state.tables ? [legend] : []),
   ]);
+}
+
+/** Spells out the three support states: dot + icon + word, never colour alone. */
+function supportLegend(): HTMLElement {
+  const states: SupportState[] = ['supported', 'oss-ended', 'eol'];
+  return el('div', { class: 'legend' }, states.map((key) => {
+    const status = SUPPORT_STATUS[key];
+    return el('span', { class: 'legend__item' }, [
+      el('span', { class: 'legend__swatch', style: `background:var(--status-${status.role})` }),
+      el('span', { text: `${status.icon} ${status.label}` }),
+    ]);
+  }));
 }
 
 function kpis(portfolio: PortfolioResponse): HTMLElement {
@@ -114,8 +139,14 @@ function kpis(portfolio: PortfolioResponse): HTMLElement {
       trend: history.map((h) => h.criticals),
     }),
     statTile({
-      label: 'On end-of-life Spring Boot', value: String(totals.eolRepos),
-      delta: { text: `${pct((totals.eolRepos / totals.repos) * 100)} of the estate`, dir: 'bad' },
+      // Counting only 'eol' understates this badly: Spring Boot 3.5 and 2.7 have
+      // commercial tails to 2032 and 2029, so they read as oss-ended while getting
+      // no free patches at all.
+      label: 'Off OSS support', value: String(totals.offOssSupport),
+      delta: {
+        text: `${pct((totals.offOssSupport / totals.repos) * 100)} of the estate · ${totals.eolRepos} fully EOL`,
+        dir: 'bad',
+      },
     }),
     statTile({
       label: 'Stale scans (>30d)', value: String(totals.staleScans),
@@ -167,7 +198,12 @@ function render(): void {
     }),
 
     el('div', { class: 'grid' }, [
-      chartCard('Spring Boot spread', `How much of the estate is on a supported release. ${portfolio.totals.eolRepos} repositories are end-of-life.`, springBootChart(visible)),
+      chartCard(
+        'Spring Boot spread',
+        `Current GA is ${portfolio.latestSpringBoot}. ${portfolio.totals.offOssSupport} of ${portfolio.totals.repos} repositories get no free patches; ${portfolio.totals.eolRepos} have no support route at all.`,
+        springBootChart(visible),
+        supportLegend(),
+      ),
       chartCard('Coverage distribution', `Repositories per coverage band, against the ${COVERAGE_POLICY}% policy floor.`, coverageChart(visible)),
     ]),
 

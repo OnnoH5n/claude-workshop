@@ -5,24 +5,58 @@ A portfolio view over Java repositories, combining **SonarQube** (quality),
 analysis (framework/LCM posture).
 
 **All QA data is mocked** — see `scripts/generate-mock.ts`. It is deterministic, so
-the demo shows identical data on every run. The Spring Boot and Java support states
-are illustrative values chosen to exercise the UI, not authoritative EOL dates.
+the demo shows identical data on every run.
+
+The **Spring Boot support ladder is real**, verified 2026-09-11 against spring.io's
+`/projects/spring-boot/generations` API and endoflife.date (the two agreed exactly on
+every date). Current GA is **4.1**; only 4.1 and 4.0 remain in OSS support. Note the
+3.x series ended at 3.5 — there is no 3.6. Re-verify before quoting these dates: they
+move every few months, and they are end-of-month policy boundaries, not precise cutoffs.
+
+3.5 and 2.7 are "extended support" generations, so both read as `oss-ended` rather
+than `eol` despite 2.7 being eight minor lines behind. Support state alone therefore
+understates lifecycle risk, which is why `backend/risk.py` also weights distance from
+current and a sub-Java-17 baseline.
+
+## Architecture
+
+Three tiers. The browser never touches the database.
+
+```
+browser  (src/, TypeScript, no framework)
+   |  fetch('/api/...')  — same origin, no CORS
+   v
+Vite :5173  — serves the frontend, proxies /api
+   |
+   v
+FastAPI :8000  (backend/, Python)  — the only thing that speaks to Postgres
+   |  psycopg
+   v
+Postgres :5433  (docker compose)
+```
+
+In production the FastAPI process serves the built frontend from `dist/` itself,
+so Vite is a development-only hop.
 
 ## Run it
 
-Requires Docker (Postgres runs in a container).
+Requires Docker (Postgres) and Python 3.12+.
 
 ```bash
 npm install
+make venv       # create backend/.venv and install Python deps
 make ingest     # start Postgres, apply schema, load data/seed.json
-make dev        # http://localhost:5173  (app and API share one port)
+make dev        # http://localhost:5173 — runs the API and frontend together
 ```
 
 ## Commands
 
 | Command | Does |
 |---|---|
-| `make dev` | Start Postgres, then app + API on :5173 |
+| `make dev` | Start Postgres, then the Python API (:8000) and Vite (:5173) |
+| `make api` | Just the FastAPI service, with reload |
+| `make web` | Just Vite |
+| `make venv` | Create `backend/.venv` and install Python deps |
 | `make ingest` | Apply schema and load `data/seed.json` |
 | `make test` | E2E suite, headed |
 | `make check` | Typecheck both projects, then the full suite |
@@ -52,6 +86,11 @@ Three things the relational model makes real that the flat file only approximate
   Recomputing on read would silently rewrite past quarters whenever the formula is
   recalibrated — and it has been, twice.
 
+`schema.sql` is **idempotent and drops nothing**; clearing data is a separate
+`TRUNCATE` in `ingest.py`. Earlier it dropped and recreated the enum types, which
+changed their OIDs and broke pooled psycopg connections still holding the old ones
+(`cache lookup failed for type NNNNN`) — a reset is not a schema migration.
+
 ### Endpoints
 
 | Route | Returns |
@@ -63,7 +102,22 @@ Three things the relational model makes real that the flat file only approximate
 
 ## Layout
 
-- `shared/types.ts` — the API contract, imported by frontend **and** server
-- `server/` — route table (framework-free), flat-file store, risk scoring
 - `src/` — no-framework TypeScript UI; `fetch` lives only in `src/api.ts`
+- `shared/types.ts` — the contract as the **frontend** sees it
+- `backend/` — FastAPI service: `main.py` (routes), `queries.py` (SQL),
+  `ingest.py` (seed loading), `risk.py` (scoring), `models.py` (Pydantic),
+  `schema.sql` (idempotent DDL)
+- `scripts/generate-mock.ts` — stands in for the vendor APIs; emits **raw metrics
+  only**, so scoring lives in exactly one place (`backend/risk.py`)
 - `specs/` + `tests/` — test plan and Playwright e2e
+
+### The contract is defined twice
+
+`shared/types.ts` (TypeScript, for the browser) and `backend/models.py` (Pydantic,
+for the API) describe the same JSON. That duplication is the real cost of a Python
+backend behind a TypeScript frontend, and it is the one thing here that can drift
+silently — **edit them together**.
+
+The intended fix is generation, not discipline: FastAPI publishes an OpenAPI schema
+at `http://localhost:8000/openapi.json`, so `shared/types.ts` can be generated from
+`backend/models.py`. That step is not wired up yet.
