@@ -1,0 +1,17 @@
+{
+  "name": "workshop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "test": "PLAYWRIGHT_HTML_OPEN=never playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "^26.4.1",
+    "typescript": "6.0.3",
+    "vite": "8.1.3"
+  }
+}
